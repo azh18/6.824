@@ -156,6 +156,7 @@ func (rf *Raft) SetRaftState(term int, state int, voteFor int) bool {
 	rf.currentTerm = term
 	rf.state = state
 	rf.voteFor = voteFor
+	rf.persist()
 	rf.Logging("state transform to: {term=%d, state=%s, voteFor=%d}", term, StateMap[state], voteFor)
 	return true
 }
@@ -330,8 +331,9 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	CurrentTerm int
-	Success     bool
+	CurrentTerm        int
+	Success            bool
+	FirstConflictIndex int
 }
 
 //
@@ -358,12 +360,20 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// failed because prevLogIndex and Term is not consistent
 		reply.CurrentTerm = rf.currentTerm
 		reply.Success = false
+		// find conflict term and its first index
 		if prevLogIndex < len(rf.logs) {
-			rf.Logging("deny AppendEntries because of inconsistent prev. leader={Index: %d, Term %d}, self={%d, %d}",
-				prevLogIndex, prevTerm, prevLogIndex, rf.logs[prevLogIndex].Term)
+			rf.Logging("deny AppendEntries because of inconsistent prev. leader={Index: %d, Term %d}, self={%d, %d}", prevLogIndex, prevTerm, prevLogIndex, rf.logs[prevLogIndex].Term)
+			conflictTerm := rf.logs[prevLogIndex].Term
+			for i := prevLogIndex; i >= 0; i-- {
+				if rf.logs[i].Term == conflictTerm {
+					reply.FirstConflictIndex = i
+				} else {
+					break
+				}
+			}
 		} else {
-			rf.Logging("deny AppendEntries because of inconsistent prev. leader={Index: %d, Term %d}, self={nil}",
-				prevLogIndex, prevTerm)
+			rf.Logging("deny AppendEntries because of inconsistent prev. leader={Index: %d, Term %d}, self={nil}", prevLogIndex, prevTerm)
+			reply.FirstConflictIndex = len(rf.logs)
 		}
 	} else {
 		// execute appendEntries and update commitIndex
@@ -391,6 +401,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 				newLogSlice = newLogSlice[:newNeededLogSliceLen]
 			}
 			rf.logs = newLogSlice
+			rf.persist()
 		}
 		if args.LeaderCommitIndex > rf.commitIndex {
 			rf.commitIndex = MinInt(args.LeaderCommitIndex, prevLogIndex+len(args.Entries))
@@ -460,7 +471,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	})
 	isLeader := true
-
+	rf.persist()
 	return index, term, isLeader
 }
 
@@ -578,6 +589,7 @@ func (rf *Raft) RaiseElectionAsNeed() {
 
 func (rf *Raft) MakeAppendEntriesArgs(isHeartBeat bool, target int, currentTerm int) (args AppendEntriesArgs) {
 	prevLogIndex := rf.nextIndices[target] - 1
+	rf.Logging("prevLogIndex=%d", prevLogIndex)
 	args = AppendEntriesArgs{
 		Term:              currentTerm,
 		LeaderId:          rf.me,
@@ -610,8 +622,8 @@ func (rf *Raft) SendAppendEntriesAndHandleResp(target int, args AppendEntriesArg
 				rf.SetRaftState(reply.CurrentTerm, RaftStateFollower, -1)
 				return
 			}
-			// prevLog not match, decrease it
-			rf.nextIndices[target]--
+			// prevLog not match, decrease target nextIndex
+			rf.nextIndices[target] = reply.FirstConflictIndex
 		} else {
 			// success, increase matchIdx and nextIdx
 			nAppendedEntries := len(args.Entries)
