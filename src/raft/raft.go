@@ -149,7 +149,7 @@ func (rf *Raft) SetRaftState(term int, state int, voteFor int) bool {
 			return false
 		}
 		// do not accept duplicated voting in one term
-		if currentVoteFor != 1 && currentVoteFor != voteFor {
+		if currentVoteFor != -1 && currentVoteFor != voteFor {
 			return false
 		}
 	}
@@ -356,6 +356,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// transfer state if state is not Follower
 	prevLogIndex := args.PrevLogIndex
 	prevTerm := args.PervLogTerm
+	rf.Logging("append entries: args=%+v", args)
 	if prevLogIndex >= len(rf.logs) || (rf.logs[prevLogIndex].Term != prevTerm) {
 		// failed because prevLogIndex and Term is not consistent
 		reply.CurrentTerm = rf.currentTerm
@@ -388,18 +389,26 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 					newLogSlice[i] = rf.logs[i]
 				}
 			}
-			// append new entries
-			hasConflictEntries := false
+
 			for i := prevLogIndex + 1; i < newNeededLogSliceLen; i++ {
 				j := i - prevLogIndex - 1
-				if newLogSlice[i].Term != args.Entries[j].Term || newLogSlice[i].Index != args.Entries[j].Index {
-					hasConflictEntries = true
-					newLogSlice[i] = args.Entries[j]
+				newLogSlice[i] = args.Entries[j]
+			}
+
+			/*
+				// append new entries
+				hasConflictEntries := false
+				for i := prevLogIndex + 1; i < newNeededLogSliceLen; i++ {
+					j := i - prevLogIndex - 1
+					if newLogSlice[i].Term != args.Entries[j].Term || newLogSlice[i].Index != args.Entries[j].Index || newLogSlice[i].Command != args.Entries[j].Command {
+						hasConflictEntries = true
+						newLogSlice[i] = args.Entries[j]
+					}
 				}
-			}
-			if hasConflictEntries {
-				newLogSlice = newLogSlice[:newNeededLogSliceLen]
-			}
+				if hasConflictEntries {
+					newLogSlice = newLogSlice[:newNeededLogSliceLen]
+				}
+			*/
 			rf.logs = newLogSlice
 			rf.persist()
 		}
